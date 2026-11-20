@@ -60,6 +60,13 @@ The gear at the left end of the bar opens **Style**. The choice applies at once 
 | **White road** | Light ivory with gold: faint low-poly triangles, some traced in gold, behind the bar, its panels and rust-settings |
 
 The choice is stored in `%ProgramData%\WinRust\style.txt`.
+## Second monitor
+
+The installed bar takes the primary monitor. For another display, start a second bar from the same exe:
+```
+topbar.exe --monitor 2
+```
+Monitors are numbered from 1, left to right. The second bar draws the same windows, clock, language, wifi, volume and battery and follows the style setting, but it is cosmetic only: the tray icons, the hidden taskbar, the work area and the keyboard hooks stay with the primary bar, so that nothing is registered twice. It reserves no strip of its own, which is what the floating dock does anyway; in the other styles maximized windows on that monitor go under it. It closes by itself if its monitor is unplugged.
 
 ## Benchmark
 

@@ -906,7 +906,7 @@ pub fn toggle(k: Kind) {
             _ => {}
         }
         let (w, h) = (sc(size(k).0), sc(size(k).1));
-        let sw = GetSystemMetrics(SM_CXSCREEN);
+        let sw = crate::scr_w();
         let x = match k {
             Kind::Start => (sw - w) / 2,
             Kind::Menu => MENU_X.get().min(sw - w - sc(8)).max(sc(8)),
