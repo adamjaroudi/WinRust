@@ -1390,12 +1390,13 @@ fn layout(w: i32) -> Layout {
     let sys = (clock.0 - sc(4) - sc(150 + if BAT.get().0 >= 0 { 66 } else { 0 }), clock.0 - sc(4));
     let apps = (sys.0 - sc(24) * tray_count() as i32, sys.0);
     let n = BTNS.with_borrow(|b| b.len()) as i32 + 1; // + the search slot
-    // The row starts just past the gear and runs toward the tray, instead of floating in the middle: the
-    // stretch on the left was dead space, and a Start button that stays in one place is easier to hit than
-    // one that slides left and right as windows open and close.
-    let x0 = sc(GEAR_X.0 + GEAR_X.1 + 10);
-    let run = (apps.0 - sc(10) - x0).max(sc(48));
+    // Centred in the whole span between the gear and the tray, not on the fixed buttons alone: centring on
+    // those left a long dead stretch on the left and pushed the row off toward the right.
+    let left = sc(GEAR_X.0 + GEAR_X.1 + 10);
+    let run = (apps.0 - sc(10) - left).max(sc(48));
     let bw = (((run + gap) / n.max(1)) - gap).clamp(sc(16), sc(44));
+    let total = n * (bw + gap) - gap;
+    let x0 = left + ((run - total) / 2).max(0);
     Layout { x0, bw, gap, apps, sys, clock }
 }
 
