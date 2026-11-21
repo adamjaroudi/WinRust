@@ -851,7 +851,9 @@ unsafe fn place(hwnd: HWND) {
     let (mx, my) = (mon_x(), mon_y());
     // the reserved strip: the bar itself plus the dock's gap under it
     // the dock reserves nothing: maximized windows take the whole screen and the dock slides away over them
-    let strip = if style() == Style::Dock || i18n::style::autohide() { 0 } else { bar_h() };
+    // With auto-hide off the bar is furniture, so it reserves its strip in every style, the floating dock
+    // included: a maximized window stops above it instead of covering it and driving it into hiding.
+    let strip = if i18n::style::autohide() { 0 } else if style() == Style::Dock { bar_h() + dock_gap() } else { bar_h() };
     // A --monitor bar reserves no strip and sets no work area: SPI_SETWORKAREA is the primary monitor's, and two
     // bars pushing it around left maximized windows jumping. The secondary bar just floats on top of its monitor.
     if !secondary() {
@@ -1513,7 +1515,10 @@ unsafe fn bar_anim(hwnd: HWND) {
 
 unsafe fn bar_step(hwnd: HWND) {
     // hides for a fullscreen game or video, and with "auto-hide" on while the pointer is away (never otherwise: not over the desktop, not in any style)
-    let target = if (FULLSCREEN.load(Relaxed) && !FS_PEEK.load(Relaxed)) || (i18n::style::autohide() && DESK_HIDE.load(Relaxed)) { 0.0 } else { 1.0 };
+    // Held open while the pointer is on the bar or one of its panels is up. The bar going away under the
+    // cursor mid-click was the worst of the old behaviour, and no state is worth doing that for.
+    let held = FS_PEEK.load(Relaxed) || fly::any_open();
+    let target = if !held && (FULLSCREEN.load(Relaxed) || (i18n::style::autohide() && DESK_HIDE.load(Relaxed))) { 0.0 } else { 1.0 };
     let now = now_ms();
     let dt = now.saturating_sub(BAR_T.replace(now)).min(50) as f32;
     let p = BAR_P.get();
@@ -1580,7 +1585,9 @@ unsafe fn fs_update(hwnd: HWND) {
         MOVED_MS.store(now, Relaxed);
     }
     EDGE_TICKS.store(if over { EDGE_TICKS.load(Relaxed) + 1 } else { 0 }, Relaxed);
-    let peek = fs && over && EDGE_TICKS.load(Relaxed) >= 2 && now.saturating_sub(MOVED_MS.load(Relaxed)) <= 1500;
+    // On the bar is enough to hold it open. In a fullscreen game it takes a deliberate push into the edge
+    // (two ticks of resting there after the pointer moved), so a game that parks the cursor cannot raise it.
+    let peek = over && (!fs || (EDGE_TICKS.load(Relaxed) >= 2 && now.saturating_sub(MOVED_MS.load(Relaxed)) <= 1500));
     if FS_PEEK.swap(peek, Relaxed) != peek {
         bar_anim(hwnd);
     }
@@ -1603,7 +1610,8 @@ unsafe fn fs_update(hwnd: HWND) {
 /// The dock is in the way of the window in front (a maximized one, or one dragged down under it): it hides like over the
 /// desktop and comes back when the pointer touches the bottom edge.
 unsafe fn dock_covered() -> bool {
-    if style() != Style::Dock {
+    // Only with auto-hide on: otherwise the dock holds its reserved strip and has nothing to dodge.
+    if style() != Style::Dock || !i18n::style::autohide() {
         return false;
     }
     let fg = GetForegroundWindow();
