@@ -1389,14 +1389,14 @@ fn layout(w: i32) -> Layout {
     let clock = (w - sc(96), w - sc(6));
     let sys = (clock.0 - sc(4) - sc(150 + if BAT.get().0 >= 0 { 66 } else { 0 }), clock.0 - sc(4));
     let apps = (sys.0 - sc(24) * tray_count() as i32, sys.0);
-    let margin = (w - apps.0) + sc(8); // keep the button group centered and clear of both sides
     let n = BTNS.with_borrow(|b| b.len()) as i32 + 1; // + the search slot
-    let bw = (((w - 2 * margin + gap) / n.max(1)) - gap).clamp(sc(16), sc(44));
-    // centered on search + Start + pins only: opening an unpinned window adds a button on the right instead of shifting Start left
-    let fixed = (PINS.with_borrow(|p| p.len()) as i32 + 2).min(n);
-    // ...but never so far right that the windows' buttons run into the tray: then the whole row shifts left
-    let right_limit = w - margin - (n * (bw + gap) - gap);
-    Layout { x0: ((w - (fixed * (bw + gap) - gap)) / 2).min(right_limit).max(sc(GEAR_X.0 + GEAR_X.1 + 6)), bw, gap, apps, sys, clock } // clear of the gear
+    // The row starts just past the gear and runs toward the tray, instead of floating in the middle: the
+    // stretch on the left was dead space, and a Start button that stays in one place is easier to hit than
+    // one that slides left and right as windows open and close.
+    let x0 = sc(GEAR_X.0 + GEAR_X.1 + 10);
+    let run = (apps.0 - sc(10) - x0).max(sc(48));
+    let bw = (((run + gap) / n.max(1)) - gap).clamp(sc(16), sc(44));
+    Layout { x0, bw, gap, apps, sys, clock }
 }
 
 unsafe fn hit(hwnd: HWND, x: i32) -> i32 {

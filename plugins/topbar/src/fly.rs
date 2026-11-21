@@ -896,6 +896,38 @@ unsafe fn anim_step(hw: HWND) {
     }
 }
 
+thread_local! {
+    /// A high surrogate waiting for its pair: WM_CHAR delivers an emoji as two messages, and dropping the
+    /// first one is why typing one into the search field used to put nothing there.
+    static SURR: Cell<u16> = const { Cell::new(0) };
+}
+
+/// The clipboard as text, for Ctrl+V in the search field.
+unsafe fn clipboard_text() -> Option<String> {
+    use windows_sys::Win32::System::{
+        DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard},
+        Memory::{GlobalLock, GlobalUnlock},
+    };
+    if OpenClipboard(null_mut()) == 0 {
+        return None;
+    }
+    let h = GetClipboardData(13); // CF_UNICODETEXT
+    let mut out = None;
+    if !h.is_null() {
+        let p = GlobalLock(h) as *const u16;
+        if !p.is_null() {
+            let mut n = 0;
+            while n < 4096 && *p.add(n) != 0 {
+                n += 1;
+            }
+            out = Some(String::from_utf16_lossy(std::slice::from_raw_parts(p, n)));
+            GlobalUnlock(h);
+        }
+    }
+    CloseClipboard();
+    out
+}
+
 pub fn toggle(k: Kind) {
     if FLY.get() == Some(k) {
         return close();
@@ -1873,6 +1905,19 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             }
             InvalidateRect(hw, null(), 0);
         }
+        WM_KEYDOWN if k == Kind::Start && wp == 'V' as usize && GetKeyState(VK_CONTROL as i32) < 0 => {
+            // paste: only the first line, trimmed — a search field is one line
+            if let Some(t) = clipboard_text() {
+                let t = t.lines().next().unwrap_or("").trim().to_string();
+                if !t.is_empty() {
+                    QUERY.with_borrow_mut(|q| q.push_str(&t));
+                    SCROLL.set(0);
+                    SEL.set(0);
+                    find_loose_exes(hw);
+                    InvalidateRect(hw, null(), 0);
+                }
+            }
+        }
         WM_KEYDOWN if k == Kind::Start && (wp == VK_DOWN as usize || wp == VK_UP as usize) => {
             // arrows move the row Enter opens; the list scrolls to keep it in view
             let n = filtered().len();
@@ -1918,11 +1963,32 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                         return 0;
                     }
                 } else {
+                    let ctrl = GetKeyState(VK_CONTROL as i32) < 0;
                     QUERY.with_borrow_mut(|q| {
                         if c == 8 {
                             q.pop();
-                        } else if let Some(ch) = char::from_u32(c).filter(|_| c >= 32) {
-                            q.push(ch);
+                        } else if c == 127 {
+                            // Ctrl+Backspace arrives as DEL. It used to pass the `c >= 32` test and go into the
+                            // query as an invisible character; it deletes the last word now, as everywhere else.
+                            while q.ends_with(' ') {
+                                q.pop();
+                            }
+                            while !q.is_empty() && !q.ends_with(' ') {
+                                q.pop();
+                            }
+                        } else if (0xD800..0xDC00).contains(&c) {
+                            SURR.set(c as u16); // the first half of an emoji: wait for the second
+                        } else if !ctrl && c >= 32 {
+                            // Ctrl held means a shortcut, not typing: its control code is not text
+                            let hi = SURR.replace(0);
+                            let ch = if hi != 0 && (0xDC00..0xE000).contains(&c) {
+                                char::decode_utf16([hi, c as u16]).next().and_then(|r| r.ok())
+                            } else {
+                                char::from_u32(c)
+                            };
+                            if let Some(ch) = ch {
+                                q.push(ch);
+                            }
                         }
                     });
                     SCROLL.set(0);
