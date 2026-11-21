@@ -13,9 +13,10 @@ pub enum Style {
     Dock,     // the bar is a floating pill in the middle
     Tiling,   // a thin status strip at the top, windows side by side
     Road,     // "White road": light ivory, faint triangles in the background
+    Stars,    // night sky: deep space blue with a field of stars behind everything
 }
 
-pub const ALL: [Style; 5] = [Style::Normal, Style::Terminal, Style::Dock, Style::Tiling, Style::Road];
+pub const ALL: [Style; 6] = [Style::Normal, Style::Terminal, Style::Dock, Style::Tiling, Style::Road, Style::Stars];
 
 impl Style {
     pub fn name(self) -> &'static str {
@@ -25,6 +26,7 @@ impl Style {
             Style::Dock => "dock",
             Style::Tiling => "tiling",
             Style::Road => "road",
+            Style::Stars => "stars",
         }
     }
     /// Unknown or empty text (no file yet, a hand edit) is the normal style.
@@ -195,7 +197,7 @@ pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
 }
 
 /// In the order of `ALL`. Neutral, low-contrast surfaces and one restrained accent (the look of macOS / modern fintech apps).
-pub const PALS: [Pal; 5] = [
+pub const PALS: [Pal; 6] = [
     // normal: graphite with the Apple system blue
     Pal { bg: rgb(22, 22, 24), line: rgb(46, 46, 50), hover: rgb(36, 36, 40), active: rgb(44, 44, 49), accent: rgb(10, 132, 255), text: rgb(245, 245, 247), dim: rgb(142, 142, 147) },
     // terminal: green on black
@@ -206,6 +208,8 @@ pub const PALS: [Pal; 5] = [
     Pal { bg: rgb(16, 17, 20), line: rgb(38, 40, 46), hover: rgb(27, 29, 34), active: rgb(35, 37, 43), accent: rgb(245, 182, 82), text: rgb(224, 226, 231), dim: rgb(120, 125, 138) },
     // white road: warm ivory with gold
     Pal { bg: rgb(247, 245, 240), line: rgb(226, 220, 207), hover: rgb(238, 233, 222), active: rgb(232, 225, 210), accent: rgb(176, 134, 52), text: rgb(28, 26, 22), dim: rgb(124, 117, 104) },
+    // stars: the deep blue of a clear night, starlight for text, a cold star-blue accent
+    Pal { bg: rgb(9, 11, 23), line: rgb(33, 39, 67), hover: rgb(20, 24, 45), active: rgb(29, 35, 62), accent: rgb(126, 186, 255), text: rgb(233, 238, 252), dim: rgb(124, 136, 170) },
 ];
 
 /// Status colours shared by every style (Apple's dark-mode system green, yellow, red).
@@ -238,11 +242,71 @@ pub fn mix(a: u32, b: u32, t: f32) -> u32 {
 
 /// The White road background over `r`: faceted ivory triangles, a few of them traced in gold.
 /// Does nothing in the other styles. Needs GDI+ started (GdiplusStartup) by the program.
+/// The decoration behind everything, per style: facets for the light road, a night sky for the stars.
 pub unsafe fn backdrop(dc: windows_sys::Win32::Graphics::Gdi::HDC, r: windows_sys::Win32::Foundation::RECT, scale: f32) {
+    match style() {
+        Style::Road => unsafe { road(dc, r, scale) },
+        Style::Stars => unsafe { sky(dc, r, scale) },
+        _ => {}
+    }
+}
+
+/// A field of stars: one per cell of a loose grid, nudged off the grid by a hash so the sky looks scattered
+/// rather than ruled, most of them small and faint, a few bright enough to earn a glint. Each star breathes
+/// on its own slow phase, so any repaint catches the sky in a slightly different mood.
+unsafe fn sky(dc: windows_sys::Win32::Graphics::Gdi::HDC, r: windows_sys::Win32::Foundation::RECT, scale: f32) {
     use windows_sys::Win32::Graphics::GdiPlus::*;
-    if !style().light() {
+    let mut g: *mut GpGraphics = std::ptr::null_mut();
+    if unsafe { GdipCreateFromHDC(dc, &mut g) } != 0 || g.is_null() {
         return;
     }
+    let argb = |c: u32, a: f32| ((a.clamp(0.0, 1.0) * 255.0) as u32) << 24 | (c & 255) << 16 | (c & 0xFF00) | (c >> 16 & 255);
+    let (x0, y0, w, h) = (r.left as f32, r.top as f32, (r.right - r.left) as f32, (r.bottom - r.top) as f32);
+    let s = 26.0 * scale.max(0.5);
+    let (cols, rows) = ((w / s) as i32 + 2, (h / (s * 0.8)) as i32 + 2);
+    let t = now_ms() as f32 / 1000.0;
+    unsafe {
+        GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
+        let mut br: *mut GpSolidFill = std::ptr::null_mut();
+        GdipCreateSolidFill(0, &mut br);
+        let mut pen: *mut GpPen = std::ptr::null_mut();
+        GdipCreatePen1(0, 1.0, UnitPixel, &mut pen);
+        for j in 0..rows {
+            for i in 0..cols {
+                let seed = hash(i, j, 11);
+                if seed < 0.42 {
+                    continue; // most of the sky is empty, which is what makes the rest read as stars
+                }
+                let x = x0 + (i as f32 + hash(i, j, 12)) * s;
+                let y = y0 + (j as f32 + hash(i, j, 13)) * s * 0.8;
+                // a slow breath, each star on its own phase: never in step, never obviously moving
+                let tw = 0.62 + 0.38 * (t * 0.55 + hash(i, j, 14) * 6.283).sin();
+                let a = (((seed - 0.42) / 0.58).powf(1.7) * tw).clamp(0.0, 1.0);
+                // most stars are white; some lean to the accent's blue, a few to a warm ember
+                let hue = hash(i, j, 15);
+                let col = if hue > 0.82 { mix(rgb(255, 255, 255), rgb(255, 214, 170), 0.5) } else { mix(rgb(255, 255, 255), pal().accent, hue * 0.55) };
+                let rad = (0.6 + 1.7 * a) * scale.max(0.6);
+                GdipSetSolidFillColor(br, argb(col, a * 0.85));
+                GdipFillEllipse(g, br as *mut GpBrush, x - rad, y - rad, rad * 2.0, rad * 2.0);
+                if a > 0.78 {
+                    // the brightest few get a cross of light, the way a bright star reads through an eyelash
+                    let (gl, len) = ((a - 0.78) / 0.22, rad * 4.5);
+                    GdipSetPenColor(pen, argb(col, gl * 0.5));
+                    GdipSetPenWidth(pen, 0.8 * scale.max(0.6));
+                    GdipDrawLine(g, pen, x - len, y, x + len, y);
+                    GdipDrawLine(g, pen, x, y - len, x, y + len);
+                }
+            }
+        }
+        GdipDeletePen(pen);
+        GdipDeleteBrush(br as *mut GpBrush);
+        GdipDeleteGraphics(g);
+    }
+}
+
+/// The light style's hand-cut facets.
+unsafe fn road(dc: windows_sys::Win32::Graphics::Gdi::HDC, r: windows_sys::Win32::Foundation::RECT, scale: f32) {
+    use windows_sys::Win32::Graphics::GdiPlus::*;
     let mut g: *mut GpGraphics = std::ptr::null_mut();
     if unsafe { GdipCreateFromHDC(dc, &mut g) } != 0 || g.is_null() {
         return;
