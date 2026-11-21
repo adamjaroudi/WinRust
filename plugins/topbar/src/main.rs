@@ -851,6 +851,39 @@ unsafe fn hide_taskbar_if_shown() {
 }
 
 /// Reserves the bottom strip of the primary monitor (maximized windows stay above it).
+/// Where the floating bar breaks into two islands: everything up to `0`, then the tray side from `1`.
+/// The desktop shows through the gap, and clicks land there instead of on the bar, because the window's
+/// region has the gap cut out of it.
+fn island_cut(w: i32) -> Option<(i32, i32)> {
+    if !style().floating() {
+        return None;
+    }
+    let l = layout(w);
+    let gap = sc(10);
+    let cut = l.apps.0 - sc(8);
+    // only worth splitting when both sides are wide enough to still read as islands
+    (cut > sc(120) && w - cut - gap > sc(120)).then_some((cut, cut + gap))
+}
+
+/// The bar's shape: one pill, two islands with a gap, or the plain rectangle of the docked styles.
+unsafe fn bar_region(w: i32) -> HRGN {
+    let h = bar_h() + 1;
+    if !style().floating() {
+        return null_mut();
+    }
+    let r = bar_h();
+    match island_cut(w) {
+        Some((a, b)) => {
+            let left = CreateRoundRectRgn(0, 0, a + 1, h, r, r);
+            let right = CreateRoundRectRgn(b, 0, w + 1, h, r, r);
+            CombineRgn(left, left, right, RGN_OR);
+            DeleteObject(right as HGDIOBJ);
+            left
+        }
+        None => CreateRoundRectRgn(0, 0, w + 1, h, r, r),
+    }
+}
+
 unsafe fn place(hwnd: HWND) {
     let (cx, cy) = (scr_w(), scr_h());
     let (mx, my) = (mon_x(), mon_y());
@@ -885,7 +918,7 @@ unsafe fn place(hwnd: HWND) {
     }
     let (x, w) = bar_x_w();
     // the dock is a pill; the other styles a plain strip
-    SetWindowRgn(hwnd, if style().floating() { CreateRoundRectRgn(0, 0, w + 1, bar_h() + 1, bar_h(), bar_h()) } else { null_mut() }, 1);
+    SetWindowRgn(hwnd, bar_region(w), 1);
     SetWindowPos(hwnd, HWND_TOPMOST, x, bar_y(), w, bar_h(), SWP_NOACTIVATE);
     InvalidateRect(hwnd, null(), 0);
 }
@@ -2097,8 +2130,11 @@ unsafe fn paint(hwnd: HWND) {
         }
     });
 
-    // a hairline between the app buttons and the tray side
-    fill(dc, RECT { left: l.apps.0 - sc(5), top: mid - sc(9), right: l.apps.0 - sc(5) + 1, bottom: mid + sc(9) }, pal().line, 0);
+    // a hairline between the app buttons and the tray side — the islands' own gap says it better,
+    // so it is only drawn when the bar is one piece
+    if island_cut(cr.right).is_none() {
+        fill(dc, RECT { left: l.apps.0 - sc(5), top: mid - sc(9), right: l.apps.0 - sc(5) + 1, bottom: mid + sc(9) }, pal().line, 0);
+    }
 
     // tray apps
     glow(dc, TAPP, hot == TAPP, cell(l.apps.0, sc(24)), pal().bg, pal().hover, sc(8));
