@@ -149,6 +149,12 @@ pub fn animf(ms: f32) -> f32 {
     .max(1.0)
 }
 
+/// Scales a spring rate (bigger = snappier) the way `animf` scales a duration, for the code that eases
+/// towards a target instead of running a fixed-length animation.
+pub fn anim_rate(k: f32) -> f32 {
+    k * 200.0 / animf(200.0)
+}
+
 /// The same for a delay before something appears, such as the pause before a tooltip.
 pub fn delay(ms: u32) -> u32 {
     match speed() {

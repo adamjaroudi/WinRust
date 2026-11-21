@@ -43,7 +43,7 @@ use windows_sys::Win32::{
 
 type Rgb = (u8, u8, u8);
 // Colours of the WinRust style the topbar gear picks (normal, terminal, dock, tiling): the same palette as the bar.
-use winrust_common::style::{pal, style, ui_face};
+use winrust_common::style::{anim_rate, delay, pal, style, ui_face};
 fn cr(c: u32) -> Rgb {
     (c as u8, (c >> 8) as u8, (c >> 16) as u8)
 }
@@ -251,7 +251,7 @@ unsafe fn step(h: HWND) {
         let now = Instant::now();
         let dt = s.last.map_or(0.016, |l| (now - l).as_secs_f32()).min(0.05);
         s.last = Some(now);
-        let (k, ks) = (1.0 - (-dt * 20.0).exp(), 1.0 - (-dt * 32.0).exp());
+        let (k, ks) = (1.0 - (-dt * anim_rate(20.0)).exp(), 1.0 - (-dt * anim_rate(32.0)).exp()); // the card follows the interface speed
         let mut moving = false;
         let want_row = (s.sel - s.top) as f32;
         ease(&mut s.alpha, s.ta, k, 0.004, &mut moving);
@@ -387,7 +387,7 @@ unsafe fn text_changed(h: HWND) {
         });
         start_anim(h);
     } else {
-        SetTimer(h, T_DEBOUNCE, 70, None); // wait for a pause in typing before asking
+        SetTimer(h, T_DEBOUNCE, delay(70), None); // wait for a pause in typing before asking
     }
     InvalidateRect(h, null(), 0);
 }
