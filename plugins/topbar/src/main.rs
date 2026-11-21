@@ -1578,23 +1578,34 @@ unsafe fn fs_update(hwnd: HWND) {
     let (top, bot) = (mon_y(), mon_y() + scr_h());
     // the pointer has to be on *this* bar's monitor, or both bars would rise together
     let mine = pt.x >= mon_x() && pt.x < mon_x() + scr_w();
-    let over = mine && if at_top() { pt.y <= top || (pt.y < top + bar_h() && BAR_P.get() > 0.0) } else { pt.y >= bot - 1 || (pt.y >= bot - bar_h() - dock_gap() && BAR_P.get() > 0.0) };
-    // fullscreen: only a pointer that moved there and then rested on the edge counts as "show me the bar"
+    // A band at the edge asks for the bar, not the single last row of pixels: having to land on one row is
+    // why it so often did not come when you wanted it. Once it is up, anywhere over it plus a margin holds
+    // it there, so it cannot slip away while you are still aiming at a button.
+    let band = sc(3).max(2);
+    let keep = bar_h() + dock_gap() + sc(12);
+    let at_edge = mine && if at_top() { pt.y <= top + band } else { pt.y >= bot - band };
+    let near = mine && if at_top() { pt.y < top + keep } else { pt.y >= bot - keep };
     let moved = pt.x != LAST_X.swap(pt.x, Relaxed) || pt.y != LAST_Y.swap(pt.y, Relaxed);
     if moved {
         MOVED_MS.store(now, Relaxed);
     }
-    EDGE_TICKS.store(if over { EDGE_TICKS.load(Relaxed) + 1 } else { 0 }, Relaxed);
-    // On the bar is enough to hold it open. In a fullscreen game it takes a deliberate push into the edge
-    // (two ticks of resting there after the pointer moved), so a game that parks the cursor cannot raise it.
-    let peek = over && (!fs || (EDGE_TICKS.load(Relaxed) >= 2 && now.saturating_sub(MOVED_MS.load(Relaxed)) <= 1500));
+    EDGE_TICKS.store(if at_edge { EDGE_TICKS.load(Relaxed) + 1 } else { 0 }, Relaxed);
+    // a short rest at the edge (two ticks, about 160 ms), so sweeping the pointer past the edge on the way
+    // somewhere else does not summon the bar — that was the other half of "it pops up when I don't want it"
+    let over = (at_edge && EDGE_TICKS.load(Relaxed) >= 2) || (near && BAR_P.get() > 0.0);
+    // In a fullscreen game it takes a longer, deliberate push, so a game that parks the cursor at an edge
+    // cannot raise the bar by accident.
+    let peek = over && (!fs || (EDGE_TICKS.load(Relaxed) >= 3 && now.saturating_sub(MOVED_MS.load(Relaxed)) <= 1500));
     if FS_PEEK.swap(peek, Relaxed) != peek {
         bar_anim(hwnd);
     }
     if fs || !(i18n::style::autohide() || desktop_now() || dock_covered()) || fly::any_open() || over {
         DESK_T.set(now);
     }
-    let desk = !fs && now.saturating_sub(DESK_T.get()) >= 2000;
+    // with auto-hide on the pointer has already left the bar and its margin, so waiting two seconds
+    // just leaves it hanging there; over the desktop the slower pace is still right
+    let linger = if i18n::style::autohide() { 450 } else { 2000 };
+    let desk = !fs && now.saturating_sub(DESK_T.get()) >= linger;
     if DESK_HIDE.swap(desk, Relaxed) != desk {
         bar_anim(hwnd);
     }
@@ -2862,7 +2873,7 @@ fn main() {
         SetTimer(hwnd, 1, 500, None);
         BAR.store(hwnd as isize, Relaxed);
         bar_anim(hwnd); // the bar slides in (it starts hidden above the screen)
-        SetTimer(hwnd, 3, 250, None); // fullscreen watch
+        SetTimer(hwnd, 3, 80, None); // fullscreen and edge watch: 4 samples a second was too coarse to feel like a reveal
         // one low-level keyboard hook is enough: a second one would open Start and switch windows twice per press
         if !secondary() {
             thread::spawn(|| {
