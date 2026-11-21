@@ -13,7 +13,7 @@ use std::{
     thread,
     sync::Mutex,
     collections::HashMap,
-    sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, Ordering::Relaxed},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU64, Ordering::Relaxed},
 };
 #[macro_use]
 extern crate winrust_common;
@@ -21,6 +21,7 @@ use winrust_common as i18n;
 use winrust_common::style::{Style, card, on_accent, pal, rgb, style, ui_face};
 mod clip;
 mod fly;
+mod mixer;
 mod quick;
 use windows::{
     Win32::{
@@ -175,6 +176,14 @@ static SWITCHING: AtomicBool = AtomicBool::new(false); // Alt+Tab switcher open 
 static FULLSCREEN: AtomicBool = AtomicBool::new(false);
 static DESK_HIDE: AtomicBool = AtomicBool::new(false); // the desktop in front and the pointer away from the bar for 2 s
 static WIN_ALONE: AtomicBool = AtomicBool::new(false);
+/// A fullscreen game keeps the screen, so the bar stays away — unless the user deliberately pushes the
+/// pointer into the very edge and holds it there for about half a second. A game that merely parks the
+/// cursor at an edge never moves it, so it cannot bring the bar up by accident.
+static FS_PEEK: AtomicBool = AtomicBool::new(false);
+static EDGE_TICKS: AtomicI32 = AtomicI32::new(0);
+static MOVED_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_X: AtomicI32 = AtomicI32::new(i32::MIN);
+static LAST_Y: AtomicI32 = AtomicI32::new(i32::MIN);
 static BAR: AtomicIsize = AtomicIsize::new(0); // the bar window, for the hook thread
 const VOLKEY: u32 = WM_APP + 14; // posted by the keyboard hook: a volume key (wp 0 up, 1 down, 2 mute)
 const SNIP: u32 = WM_APP + 13; // posted by the keyboard hook: PrtSc / Win+Shift+S with no explorer to handle them
@@ -1504,7 +1513,7 @@ unsafe fn bar_anim(hwnd: HWND) {
 
 unsafe fn bar_step(hwnd: HWND) {
     // hides for a fullscreen game or video, and with "auto-hide" on while the pointer is away (never otherwise: not over the desktop, not in any style)
-    let target = if FULLSCREEN.load(Relaxed) || (i18n::style::autohide() && DESK_HIDE.load(Relaxed)) { 0.0 } else { 1.0 };
+    let target = if (FULLSCREEN.load(Relaxed) && !FS_PEEK.load(Relaxed)) || (i18n::style::autohide() && DESK_HIDE.load(Relaxed)) { 0.0 } else { 1.0 };
     let now = now_ms();
     let dt = now.saturating_sub(BAR_T.replace(now)).min(50) as f32;
     let p = BAR_P.get();
@@ -1565,6 +1574,16 @@ unsafe fn fs_update(hwnd: HWND) {
     // the pointer has to be on *this* bar's monitor, or both bars would rise together
     let mine = pt.x >= mon_x() && pt.x < mon_x() + scr_w();
     let over = mine && if at_top() { pt.y <= top || (pt.y < top + bar_h() && BAR_P.get() > 0.0) } else { pt.y >= bot - 1 || (pt.y >= bot - bar_h() - dock_gap() && BAR_P.get() > 0.0) };
+    // fullscreen: only a pointer that moved there and then rested on the edge counts as "show me the bar"
+    let moved = pt.x != LAST_X.swap(pt.x, Relaxed) || pt.y != LAST_Y.swap(pt.y, Relaxed);
+    if moved {
+        MOVED_MS.store(now, Relaxed);
+    }
+    EDGE_TICKS.store(if over { EDGE_TICKS.load(Relaxed) + 1 } else { 0 }, Relaxed);
+    let peek = fs && over && EDGE_TICKS.load(Relaxed) >= 2 && now.saturating_sub(MOVED_MS.load(Relaxed)) <= 1500;
+    if FS_PEEK.swap(peek, Relaxed) != peek {
+        bar_anim(hwnd);
+    }
     if fs || !(i18n::style::autohide() || desktop_now() || dock_covered()) || fly::any_open() || over {
         DESK_T.set(now);
     }
@@ -1573,7 +1592,7 @@ unsafe fn fs_update(hwnd: HWND) {
         bar_anim(hwnd);
     }
     if FULLSCREEN.swap(fs, Relaxed) != fs {
-        if fs {
+        if fs && !FS_PEEK.load(Relaxed) {
             fly::close_now();
             hide_tip(hwnd);
         }

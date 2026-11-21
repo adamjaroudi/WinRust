@@ -21,6 +21,8 @@ enum Act {
     VolSlide,
     BrightSlide,
     Mute,
+    AppVol(usize),  // volume mixer: a program's slider
+    AppMute(usize), // volume mixer: a program's mute button
     WifiSwitch,
     Tile(u8),
     WifiMore,
@@ -581,7 +583,7 @@ unsafe fn wifi_join(n: &Net, pass: &str) {
 
 fn size(k: Kind) -> (i32, i32) {
     match k {
-        Kind::Quick => (360, 252 + 44 * sliders()),
+        Kind::Quick => (360, 252 + 44 * sliders() + mix_h()),
         Kind::Cal => (330, 340),
         Kind::Wifi => (360, wifi_rows().2),
         Kind::Start => (560, 640),
@@ -614,6 +616,27 @@ fn wifi_rows() -> (Vec<(i32, i32)>, Option<i32>, i32) {
 /// Quick settings: how many slider rows (volume, plus brightness on a laptop).
 fn sliders() -> i32 {
     if BRIGHT.load(Relaxed) >= 0 { 2 } else { 1 }
+}
+
+
+/// Volume mixer rows: one per program making sound. Capped, so a dozen noisy programs cannot grow
+/// the panel past the screen.
+fn mix_apps() -> Vec<crate::mixer::App> {
+    let mut v = crate::mixer::apps();
+    v.truncate(4);
+    v
+}
+
+/// y where the mixer card starts (just under the sliders card), and its height (0 with nothing playing).
+fn mix_top() -> i32 {
+    200 + 44 * sliders()
+}
+
+fn mix_h() -> i32 {
+    match mix_apps().len() as i32 {
+        0 => 0,
+        n => 30 + 44 * n + 8,
+    }
 }
 
 const CTX_W: i32 = 196; // right-click menu width, logical px
@@ -663,6 +686,12 @@ fn rects(k: Kind) -> Vec<(RECT, Act)> {
             }
             v.push((r(24, y, 60, y + 40), Act::Mute));
             v.push((r(64, y, w - 24, y + 40), Act::VolSlide));
+            let mt = mix_top();
+            for i in 0..mix_apps().len() as i32 {
+                let ry = mt + 30 + 44 * i;
+                v.push((r(24, ry, 56, ry + 40), Act::AppMute(i as usize)));
+                v.push((r(148, ry, w - 24, ry + 40), Act::AppVol(i as usize)));
+            }
             v.push((r(w - 54, h - 50, w - 14, h - 10), Act::Settings("ms-settings:")));
             v
         }
@@ -898,6 +927,7 @@ pub fn toggle(k: Kind) {
                 read_brightness();
                 read_nets();
                 crate::quick::refresh();
+                crate::mixer::refresh();
             }
             Kind::Start => {
                 pinned_load(); // the search card (rs-launcher) can add to this list from another process
@@ -939,10 +969,14 @@ pub fn toggle(k: Kind) {
 
 unsafe fn slide(a: Act, x: i32, rect: RECT) {
     let f = ((x - rect.left - sc(8)) as f32 / (rect.right - rect.left - sc(16)) as f32).clamp(0.0, 1.0);
-    if a == Act::VolSlide {
-        set_volume((f * 100.0).round() as i32);
-    } else {
-        BRIGHT.store(((f * 100.0) as i32).max(1), Relaxed);
+    match a {
+        Act::VolSlide => set_volume((f * 100.0).round() as i32),
+        Act::AppVol(i) => {
+            if let Some(app) = mix_apps().get(i) {
+                crate::mixer::set_vol(app.pid, (f * 100.0).round() as i32);
+            }
+        }
+        _ => BRIGHT.store(((f * 100.0) as i32).max(1), Relaxed),
     }
 }
 
@@ -1008,6 +1042,16 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
             DRAG.set(if a == Act::VolSlide { 1 } else { 2 });
             SetCapture(FH.get());
             slide(a, x, rect);
+        }
+        Act::AppVol(i) => {
+            DRAG.set(3 + i as u8); // 1 = master volume, 2 = brightness, 3.. = the mixer rows
+            SetCapture(FH.get());
+            slide(a, x, rect);
+        }
+        Act::AppMute(i) => {
+            if let Some(app) = mix_apps().get(i) {
+                crate::mixer::set_mute(app.pid, !app.muted);
+            }
         }
         Act::WifiMore => toggle(Kind::Wifi),
         Act::WifiSwitch => wifi_radio(WIFI.get() < 0 && NETS.with_borrow(|n| n.is_empty())),
@@ -1283,6 +1327,26 @@ unsafe fn paint(hw: HWND, k: Kind) {
             SelectObject(dc, f_glyph);
             text(dc, if muted || vol == 0 { "\u{E74F}" } else { "\u{E767}" }, r(24, y, 60, y + 40), if muted { BAD } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
             track(dc, rs.iter().find(|(_, a)| *a == Act::VolSlide).unwrap().0, if muted { 0.0 } else { vol.max(0) as f32 / 100.0 });
+            // volume mixer: one row per program that is making sound
+            let apps = mix_apps();
+            if !apps.is_empty() {
+                let mt = mix_top();
+                surface(dc, r(16, mt, w - 16, mt + mix_h() - 8), card, sc(18));
+                SelectObject(dc, f_small);
+                text(dc, t!("Микшер громкости", "Volume mixer"), r(28, mt + 4, w - 28, mt + 26), pal().dim, DT_LEFT);
+                for (i, app) in apps.iter().enumerate() {
+                    let ry = mt + 30 + 44 * i as i32;
+                    g(Act::AppMute(i), r(24, ry + 2, 56, ry + 38), card, mix(card, pal().text, 0.08), sc(36));
+                    SelectObject(dc, f_glyph);
+                    text(dc, if app.muted || app.vol == 0 { "\u{E74F}" } else { "\u{E767}" }, r(24, ry, 56, ry + 40), if app.muted { BAD } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
+                    SelectObject(dc, f_small);
+                    text(dc, &app.name, r(62, ry, 144, ry + 40), pal().text, DT_LEFT);
+                    // the row list can change between rects() and here: a missing rect just means no slider this frame
+                    if let Some((rc, _)) = rs.iter().find(|(_, a)| *a == Act::AppVol(i)) {
+                        track(dc, *rc, if app.muted { 0.0 } else { app.vol.max(0) as f32 / 100.0 });
+                    }
+                }
+            }
             // footer: the battery in a pill, the settings gear in a circle
             let (pct, ac) = BAT.get();
             if pct >= 0 {
@@ -1702,9 +1766,19 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             InvalidateRect(hw, null(), 0);
         }
         WM_TIMER => {
-            if k == Kind::Wifi && PASS.with_borrow(|p| p.is_none()) {
+            let wifi = k == Kind::Wifi && PASS.with_borrow(|p| p.is_none());
+            if wifi {
                 read_nets();
-                let (w, h) = (sc(size(k).0), sc(size(k).1));
+            }
+            if k == Kind::Quick {
+                crate::mixer::refresh(); // programs start and stop playing while the panel is open
+            }
+            // The Wi-Fi list and the mixer rows both arrive after the panel was opened and sized, so the panel
+            // has to follow the height they need, or the last row is cut off by its own edge.
+            let (w, h) = (sc(size(k).0), sc(size(k).1));
+            let mut cur: RECT = zeroed();
+            GetWindowRect(hw, &mut cur);
+            if wifi || cur.bottom - cur.top != h {
                 // the panel hangs above the bar: keep its bottom edge where it is and grow / shrink upward
                 let (x, _) = FIN.get();
                 let y = pop_y(h);
@@ -1716,7 +1790,11 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
         }
         WM_MOUSEMOVE => {
             if DRAG.get() != 0 {
-                let want = if DRAG.get() == 1 { Act::VolSlide } else { Act::BrightSlide };
+                let want = match DRAG.get() {
+                    1 => Act::VolSlide,
+                    2 => Act::BrightSlide,
+                    d => Act::AppVol(d.saturating_sub(3) as usize),
+                };
                 if let Some((rc, a)) = rects(k).into_iter().find(|(_, a)| *a == want) {
                     slide(a, x, rc);
                 }

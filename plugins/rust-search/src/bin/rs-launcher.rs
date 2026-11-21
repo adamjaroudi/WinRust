@@ -30,7 +30,7 @@ use windows_sys::Win32::{
         },
     },
     Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT},
-    System::LibraryLoader::GetModuleHandleW,
+    System::{LibraryLoader::GetModuleHandleW, Threading::AttachThreadInput},
     UI::{
         Input::KeyboardAndMouse::*,
         Shell::{
@@ -208,9 +208,28 @@ unsafe fn show(h: HWND) {
     let (w, hgt, slide) = st(|s| ((W as f32 * s.scale) as i32, s.height as i32, s.slide as i32));
     SetLayeredWindowAttributes(h, 0, 0, LWA_ALPHA);
     SetWindowPos(h, HWND_TOPMOST, x, y + slide, w, hgt, SWP_SHOWWINDOW);
-    SetForegroundWindow(h);
+    force_fg(h);
     SetTimer(h, T_CARET, 530, None);
     start_anim(h);
+}
+
+/// SetForegroundWindow only obeys a thread that owns the user's input. The hotkey gives us that, but when
+/// the bar asks the card to open (its Start search box posts the same message) nothing does, so the card
+/// came up visible but without keyboard focus and swallowed every keystroke. Attaching to the foreground
+/// thread's input queue lifts the restriction for the moment, the way the bar already does for its own Start.
+unsafe fn force_fg(h: HWND) {
+    if SetForegroundWindow(h) != 0 && GetForegroundWindow() == h {
+        SetFocus(h);
+        return;
+    }
+    let me = GetWindowThreadProcessId(h, null_mut());
+    let ft = GetWindowThreadProcessId(GetForegroundWindow(), null_mut());
+    let attach = ft != 0 && ft != me && AttachThreadInput(me, ft, 1) != 0;
+    SetForegroundWindow(h);
+    if attach {
+        AttachThreadInput(me, ft, 0);
+    }
+    SetFocus(h); // detaching drops our thread's keyboard focus; without this the card still gets no typing
 }
 
 unsafe fn hide(h: HWND) {
