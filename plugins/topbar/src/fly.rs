@@ -581,6 +581,11 @@ unsafe fn wifi_join(n: &Net, pass: &str) {
 
 // ---------- geometry ----------
 
+/// The panels' corner radius: rounder with the floating dock, where they read as islands of their own.
+fn island_rad() -> i32 {
+    if style().floating() { 22 } else { 16 }
+}
+
 fn size(k: Kind) -> (i32, i32) {
     match k {
         Kind::Quick => (360, 252 + 44 * sliders() + mix_h()),
@@ -987,7 +992,7 @@ pub fn toggle(k: Kind) {
         }
         FIN.set((x, fy));
         T0.set(now_ms());
-        SetWindowRgn(hw, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(16), rr(16)), 1);
+        SetWindowRgn(hw, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(island_rad()), rr(island_rad())), 1);
         FH.set(hw);
         FLY.set(Some(k));
         ShowWindow(hw, SW_SHOW);
@@ -1292,9 +1297,10 @@ unsafe fn paint(hw: HWND, k: Kind) {
     BUSY.set(false);
     let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right, cr.bottom));
     let old = SelectObject(dc, bmp);
-    fill(dc, cr, if style().light() { mix(pal().bg, pal().dim, 0.3) } else { mix(pal().bg, pal().text, 0.12) }, sc(16));
-    fill(dc, inset(cr, 1), pal().bg, sc(16));
-    lit(dc, inset(cr, 1), pal().bg, mix(pal().bg, pal().text, 0.11), sc(30), sc(16));
+    let rad = sc(island_rad());
+    fill(dc, cr, if style().light() { mix(pal().bg, pal().dim, 0.3) } else { mix(pal().bg, pal().text, 0.12) }, rad);
+    fill(dc, inset(cr, 1), pal().bg, rad);
+    lit(dc, inset(cr, 1), pal().bg, mix(pal().bg, pal().text, 0.11), sc(30), rad);
     winrust_common::style::backdrop(dc, inset(cr, 1), sc(100) as f32 / 100.0);
     SetBkMode(dc, TRANSPARENT as i32);
     let (face, gface) = (wide(ui_face()), wide(winrust_common::style::icon_face()));
@@ -1840,7 +1846,7 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 let y = pop_y(h);
                 FIN.set((x, y));
                 SetWindowPos(hw, null_mut(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
-                SetWindowRgn(hw, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(16), rr(16)), 1);
+                SetWindowRgn(hw, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(island_rad()), rr(island_rad())), 1);
             }
             InvalidateRect(hw, null(), 0);
         }

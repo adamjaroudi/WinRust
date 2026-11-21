@@ -41,6 +41,11 @@ impl Style {
     pub fn mono(self) -> bool {
         self == Style::Terminal
     }
+    /// The bar is an island floating clear of the screen edge, not a strip across it. Two styles want
+    /// this look, so it is a question about the style rather than a test for one particular style.
+    pub fn floating(self) -> bool {
+        matches!(self, Style::Dock | Style::Stars)
+    }
     /// Dark text on a light background.
     pub fn light(self) -> bool {
         self == Style::Road

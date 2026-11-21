@@ -132,12 +132,12 @@ fn at_top() -> bool {
 }
 /// Gap under the floating dock.
 fn dock_gap() -> i32 {
-    if style() == Style::Dock { sc(8) } else { 0 }
+    if style().floating() { sc(8) } else { 0 }
 }
 /// Screen x and width of the bar: the whole screen, or the dock in the middle.
 unsafe fn bar_x_w() -> (i32, i32) {
     let cx = scr_w();
-    if style() == Style::Dock {
+    if style().floating() {
         let w = (cx * 3 / 5).max(sc(720)).min(cx);
         (mon_x() + (cx - w) / 2, w)
     } else {
@@ -150,7 +150,10 @@ unsafe fn bar_y() -> i32 {
 }
 /// Screen y of a popup of height `h` next to the bar: above it, or below it when the bar is at the top.
 unsafe fn pop_y(h: i32) -> i32 {
-    if at_top() { mon_y() + bar_h() + sc(8) } else { bar_top() - sc(8) - h }
+    // The floating dock is an island, so its panels are islands too: a wider gap, and they carry the
+    // dock's own corner radius, instead of sitting against the bar the way a docked panel would.
+    let gap = if style().floating() { sc(14) } else { sc(8) };
+    if at_top() { mon_y() + bar_h() + gap } else { bar_top() - gap - h }
 }
 const GOOD: u32 = winrust_common::style::GOOD;
 const BAD: u32 = winrust_common::style::BAD;
@@ -855,7 +858,7 @@ unsafe fn place(hwnd: HWND) {
     // the dock reserves nothing: maximized windows take the whole screen and the dock slides away over them
     // With auto-hide off the bar is furniture, so it reserves its strip in every style, the floating dock
     // included: a maximized window stops above it instead of covering it and driving it into hiding.
-    let strip = if i18n::style::autohide() { 0 } else if style() == Style::Dock { bar_h() + dock_gap() } else { bar_h() };
+    let strip = if i18n::style::autohide() { 0 } else if style().floating() { bar_h() + dock_gap() } else { bar_h() };
     // A --monitor bar reserves no strip and sets no work area: SPI_SETWORKAREA is the primary monitor's, and two
     // bars pushing it around left maximized windows jumping. The secondary bar just floats on top of its monitor.
     if !secondary() {
@@ -882,7 +885,7 @@ unsafe fn place(hwnd: HWND) {
     }
     let (x, w) = bar_x_w();
     // the dock is a pill; the other styles a plain strip
-    SetWindowRgn(hwnd, if style() == Style::Dock { CreateRoundRectRgn(0, 0, w + 1, bar_h() + 1, bar_h(), bar_h()) } else { null_mut() }, 1);
+    SetWindowRgn(hwnd, if style().floating() { CreateRoundRectRgn(0, 0, w + 1, bar_h() + 1, bar_h(), bar_h()) } else { null_mut() }, 1);
     SetWindowPos(hwnd, HWND_TOPMOST, x, bar_y(), w, bar_h(), SWP_NOACTIVATE);
     InvalidateRect(hwnd, null(), 0);
 }
@@ -1449,7 +1452,7 @@ unsafe fn hv(key: i32, on: bool) -> f32 {
         let e = m.entry(key).or_insert((0.0, now));
         let dt = now.saturating_sub(e.1).min(50) as f32; // a long pause must not make the first frame jump
         e.1 = now;
-        e.0 = if e.0 < target { (e.0 + dt / 130.0).min(target) } else { (e.0 - dt / 180.0).max(target) };
+        e.0 = if e.0 < target { (e.0 + dt / i18n::style::animf(130.0)).min(target) } else { (e.0 - dt / i18n::style::animf(180.0)).max(target) };
         e.0
     });
     if v != target {
@@ -1463,29 +1466,41 @@ unsafe fn glow(dc: HDC, key: i32, on: bool, r: RECT, from: u32, to: u32, rad: i3
     let t = hv(key, on);
     let p = press_t(key);
     if t > 0.01 || p > 0.0 {
-        fill(dc, r, mix(mix(from, to, t), pal().accent, 0.5 * p), rad);
+        fill(dc, r, mix(mix(from, to, t), pal().accent, 0.5 * p.max(0.0)), rad);
     }
 }
 
 thread_local! {
-    static PRESS: Cell<(i32, u64)> = const { Cell::new((i32::MIN, 0)) }; // last clicked element and when
+    static PRESS: RefCell<Vec<(i32, u64)>> = const { RefCell::new(Vec::new()) }; // every click still animating: (element, when)
     static SEEN: RefCell<HashMap<isize, u64>> = RefCell::new(HashMap::new()); // when each taskbar button first showed
 }
 
 /// Marks `key` as just clicked / dropped on: its highlight flashes and its icon squeezes for a moment.
 unsafe fn press(key: i32) {
-    PRESS.set((key, now_ms()));
+    let now = now_ms();
+    PRESS.with_borrow_mut(|v| {
+        v.retain(|&(k, t0)| k != key && now.saturating_sub(t0) < 700); // drop this key's older press and anything finished
+        v.push((key, now));
+    });
+}
+
+/// 0..1 through this key's newest press, or 0 when it has none: the ripple's size and fade.
+unsafe fn press_age(key: i32) -> f32 {
+    let now = now_ms();
+    let t = PRESS.with_borrow(|v| v.iter().filter(|(k, _)| *k == key).map(|(_, t0)| now.saturating_sub(*t0) as f32 / i18n::style::animf(420.0)).fold(1.0f32, f32::min));
+    if t >= 1.0 { 0.0 } else { t }
 }
 
 /// 1.0 right after the click, easing to 0 over 320 ms (keeps the painter running meanwhile).
 unsafe fn press_t(key: i32) -> f32 {
-    let (k, t0) = PRESS.get();
-    let t = now_ms().saturating_sub(t0) as f32 / 320.0;
-    if k != key || t >= 1.0 {
+    let t = press_age(key);
+    if t <= 0.0 {
         return 0.0;
     }
     BUSY.set(true);
-    (1.0 - t) * (1.0 - t)
+    // a spring: hard at the click, back through zero, a small overshoot, then still. Negative values are
+    // the overshoot, so an icon that squeezed on the way down grows a little on the way back up.
+    (-4.5 * t).exp() * (t * 9.0).cos()
 }
 
 /// 0..1 over 260 ms after a taskbar button first appears: new windows pop in instead of snapping into place.
@@ -1629,7 +1644,7 @@ unsafe fn fs_update(hwnd: HWND) {
 /// desktop and comes back when the pointer touches the bottom edge.
 unsafe fn dock_covered() -> bool {
     // Only with auto-hide on: otherwise the dock holds its reserved strip and has nothing to dodge.
-    if style() != Style::Dock || !i18n::style::autohide() {
+    if !style().floating() || !i18n::style::autohide() {
         return false;
     }
     let fg = GetForegroundWindow();
@@ -1986,6 +2001,18 @@ unsafe fn paint(hwnd: HWND) {
     for y in 0..h {
         fill(dc, RECT { left: 0, top: y, right: cr.right, bottom: y + 1 }, mix(lit, pal().bg, (y as f32 / sc(18) as f32).min(1.0)), 0);
     }
+    // A soft light under the pointer, so the surface answers the mouse before anything is clicked.
+    // Painted before the backdrop, or it would wash over the stars instead of lying beneath them.
+    let mut cp = POINT { x: 0, y: 0 };
+    GetCursorPos(&mut cp);
+    ScreenToClient(hwnd, &mut cp);
+    if cp.y >= 0 && cp.y < h && cp.x > -sc(70) && cp.x < cr.right + sc(70) {
+        for i in (1..=5).rev() {
+            let rad = sc(11) * i;
+            let a = 0.016 * (6 - i) as f32;
+            fill(dc, RECT { left: cp.x - rad, top: h / 2 - rad, right: cp.x + rad, bottom: h / 2 + rad }, mix(pal().bg, pal().text, a), rad);
+        }
+    }
     winrust_common::style::backdrop(dc, cr, sc(100) as f32 / 100.0);
     let edge = if at_top() { h - 1 } else { 0 }; // the hairline faces the windows
     fill(dc, RECT { left: 0, top: edge, right: cr.right, bottom: edge + 1 }, pal().line, 0);
@@ -2026,7 +2053,14 @@ unsafe fn paint(hwnd: HWND) {
             let act = b.wins.contains(&fg);
             let (th, ta, tp) = (hv(i as i32, hot == i as i32), hv(2000 + i as i32, act), press_t(i as i32));
             if th > 0.01 || ta > 0.01 || tp > 0.0 {
-                fill(dc, r, mix(mix(mix(pal().bg, pal().hover, th), active_bg, ta), pal().accent, 0.5 * tp), sc(8));
+                // the ripple: a ring of light swelling out of the button and fading as it goes
+            let rp = press_age(i as i32);
+            if rp > 0.0 {
+                let grow = (rp * sc(18) as f32) as i32;
+                let ring = RECT { left: r.left - grow, top: r.top - grow / 2, right: r.right + grow, bottom: r.bottom + grow / 2 };
+                fill(dc, ring, mix(pal().bg, pal().accent, 0.20 * (1.0 - rp)), sc(10) + grow);
+            }
+            fill(dc, r, mix(mix(mix(pal().bg, pal().hover, th), active_bg, ta), pal().accent, 0.5 * tp.max(0.0)), sc(8));
             }
             if i == 0 {
                 // Windows logo in four tiles, lit from the top left; grows a little on hover, squeezes on click
@@ -2092,7 +2126,7 @@ unsafe fn paint(hwnd: HWND) {
     let grp = RECT { left: tb.left + sc(44), top, right: tb.right, bottom: bot };
     let (tg, pg) = (hv(SYS_GRP, matches!(hot, WIFI_I | VOL_I | BAT_I) || fly::is_open(fly::Kind::Quick)), press_t(WIFI_I).max(press_t(VOL_I)).max(press_t(BAT_I)));
     if tg > 0.01 || pg > 0.0 {
-        fill(dc, grp, mix(mix(pal().bg, pal().hover, tg), pal().accent, 0.5 * pg), sc(8));
+        fill(dc, grp, mix(mix(pal().bg, pal().hover, tg), pal().accent, 0.5 * pg.max(0.0)), sc(8));
     }
     let mut x = tb.left + sc(10);
     text(dc, &lang_name(), cell(x, sc(34)), pal().text, DT_LEFT);

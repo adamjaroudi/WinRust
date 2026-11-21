@@ -40,7 +40,7 @@ fn desk_bottom() -> i32 {
     let reserved = work_strips().1;
     if reserved > 0 { return reserved + ui::sc(4); }
     let bar_up = unsafe { !FindWindowW(w("topbar").as_ptr(), ptr::null()).is_null() };
-    if bar_up && winrust_common::style::style() == winrust_common::style::Style::Dock { ui::sc(52) } else { ui::sc(8) }
+    if bar_up && winrust_common::style::style().floating() { ui::sc(52) } else { ui::sc(8) }
 }
 const THUMB: i32 = 96;
 const WM_THUMB: u32 = WM_APP + 2; // worker -> UI: wp = Box<(era, row, HBITMAP)>
