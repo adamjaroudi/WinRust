@@ -875,7 +875,7 @@ unsafe fn anim_step(hw: HWND) {
     let now = now_ms();
     let (g, gt0, gpos) = GHOST.get();
     if hw == g {
-        let t = (now.saturating_sub(gt0) as f32 / 150.0).min(1.0);
+        let t = (now.saturating_sub(gt0) as f32 / i18n::style::animf(150.0)).min(1.0);
         let q = t * t;
         SetLayeredWindowAttributes(hw, 0, ((1.0 - q) * 255.0) as u8, LWA_ALPHA);
         SetWindowPos(hw, null_mut(), gpos.0, gpos.1 + (q * sc(10) as f32) as i32, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -883,7 +883,7 @@ unsafe fn anim_step(hw: HWND) {
             kill_ghost();
         }
     } else if hw == FH.get() {
-        let t = (now.saturating_sub(T0.get()) as f32 / 220.0).min(1.0);
+        let t = (now.saturating_sub(T0.get()) as f32 / i18n::style::animf(220.0)).min(1.0);
         let p = 1.0 - (1.0 - t).powi(3);
         SetLayeredWindowAttributes(hw, 0, (p * 255.0) as u8, LWA_ALPHA);
         let (x, y) = FIN.get();

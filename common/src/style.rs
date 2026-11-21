@@ -111,6 +111,54 @@ pub fn set_autohide(on: bool) {
     }
 }
 
+fn speed_file() -> Option<PathBuf> {
+    std::env::var_os("ProgramData").map(|p| PathBuf::from(p).join("WinRust").join("speed.txt"))
+}
+
+/// How quickly the bar and its panels move: 0 instant (no animation at all), 1 fast — the default — or
+/// 2 smooth, the leisurely timings the code is written with. Re-read once a second, like autohide above.
+pub fn speed() -> u8 {
+    if now_ms().saturating_sub(SPEED_AT.load(Relaxed)) > 1000 {
+        let v = speed_file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|s| s.trim().parse::<u8>().ok());
+        SPEED.store(v.unwrap_or(1).min(2), Relaxed);
+        SPEED_AT.store(now_ms(), Relaxed);
+    }
+    SPEED.load(Relaxed)
+}
+
+static SPEED: AtomicU8 = AtomicU8::new(1);
+static SPEED_AT: AtomicU64 = AtomicU64::new(0);
+
+pub fn set_speed(v: u8) {
+    SPEED.store(v.min(2), Relaxed);
+    SPEED_AT.store(now_ms(), Relaxed);
+    if let Some(f) = speed_file() {
+        let _ = std::fs::create_dir_all(f.parent().unwrap());
+        let _ = std::fs::write(f, v.min(2).to_string());
+    }
+    unsafe { PostMessageW(HWND_BROADCAST, msg(), 0, 0) };
+}
+
+/// Scales an animation length in ms to the chosen speed. Never 0: the callers divide by it.
+pub fn animf(ms: f32) -> f32 {
+    match speed() {
+        0 => 1.0,
+        1 => ms * 0.4,
+        _ => ms,
+    }
+    .max(1.0)
+}
+
+/// The same for a delay before something appears, such as the pause before a tooltip.
+pub fn delay(ms: u32) -> u32 {
+    match speed() {
+        0 => 1,
+        1 => ms * 2 / 5,
+        _ => ms,
+    }
+    .max(1)
+}
+
 /// The broadcast message a window gets when the style changed: call `reload()` and repaint.
 pub fn msg() -> u32 {
     static M: AtomicU32 = AtomicU32::new(0);

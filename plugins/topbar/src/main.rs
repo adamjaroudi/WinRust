@@ -490,7 +490,7 @@ unsafe fn tf_slide(e: f32) -> i32 {
 /// Opening progress 0..1 of the tray flyout, eased, and of its icon `n` (each one starts 25 ms after the previous).
 unsafe fn tf_progress(n: i32) -> f32 {
     let age = now_ms().saturating_sub(TF_ANIM.get().0) as f32;
-    ease(((age - 25.0 * n as f32) / 200.0).clamp(0.0, 1.0))
+    ease(((age - i18n::style::animf(25.0) * n as f32) / i18n::style::animf(200.0)).clamp(0.0, 1.0))
 }
 
 unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -1517,7 +1517,7 @@ unsafe fn bar_step(hwnd: HWND) {
     let now = now_ms();
     let dt = now.saturating_sub(BAR_T.replace(now)).min(50) as f32;
     let p = BAR_P.get();
-    let p = if p < target { (p + dt / 380.0).min(target) } else { (p - dt / 240.0).max(target) };
+    let p = if p < target { (p + dt / i18n::style::animf(380.0)).min(target) } else { (p - dt / i18n::style::animf(240.0)).max(target) };
     BAR_P.set(p);
     if p > 0.0 && IsWindowVisible(hwnd) == 0 {
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -2397,6 +2397,11 @@ unsafe fn style_menu() {
     let mut items: Vec<fly::MItem> = i18n::style::ALL.iter().zip(names).map(|(&s, n)| fly::MItem::new(n).on(s == style())).collect();
     items.push(fly::MItem::new(t!("Разложить окна плиткой", "Tile the windows")).sep());
     items.push(fly::MItem::new(t!("Скрывать панель автоматически", "Hide the bar automatically")).on(i18n::style::autohide()));
+    // how fast everything moves: the bar's slide, the panels, the pause before a tooltip
+    for (i, n) in [t!("Мгновенно", "Instant"), t!("Быстро", "Fast"), t!("Плавно", "Smooth")].into_iter().enumerate() {
+        let it = fly::MItem::new(n).on(i18n::style::speed() == i as u8);
+        items.push(if i == 0 { it.sep() } else { it });
+    }
     let head = (null_mut(), "\u{E713}", t!("Стиль", "Style").to_string(), t!("Вид панели и программ WinRust", "Look of the bar and the WinRust programs").to_string());
     let tile = i18n::style::ALL.len();
     fly::menu(tip_cx(&bar_layout(bar), GEAR), Some(head), items, move |i| match i18n::style::ALL.get(i) {
@@ -2405,9 +2410,13 @@ unsafe fn style_menu() {
             place(bar);
         }
         None if i == tile => tile_windows(),
-        None => {
+        None if i == tile + 1 => {
             i18n::style::set_autohide(!i18n::style::autohide());
             place(bar); // the reserved strip comes or goes with it
+            bar_anim(bar);
+        }
+        None => {
+            i18n::style::set_speed((i - tile - 2) as u8); // Instant, Fast, Smooth
             bar_anim(bar);
         }
     });
@@ -2551,6 +2560,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             min_rect(lp as *mut ShellHookInfo, hwnd); // HSHELL_GETMINRECT
             return 1;
         }
+        // A window opened, closed, was replaced or came to the front. Redrawing here instead of waiting for
+        // the next poll is what makes a new program's button appear at once rather than up to 500 ms later.
+        if matches!(wp as u32, 1 | 2 | 4 | 13) {
+            refresh();
+            InvalidateRect(hwnd, null(), 0);
+        }
         return 0;
     }
     if msg != 0 && msg == TB_MSG.get() {
@@ -2631,7 +2646,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if HOT.replace(h) != h {
                 hide_tip(hwnd);
                 if h != NONE {
-                    SetTimer(hwnd, 2, 450, None);
+                    SetTimer(hwnd, 2, i18n::style::delay(450), None);
                 }
                 InvalidateRect(hwnd, null(), 0);
             }
@@ -2821,12 +2836,14 @@ fn main() {
         // them as caption stubs on the desktop. Becoming that window (what explorer's taskbar does) makes them hide properly
         // and gets us HSHELL_GETMINRECT. Only when explorer's taskbar is absent: with it running its own registration stays.
         if !secondary() {
-            if find_other("Shell_TrayWnd").is_null() {
-                if let Some(f) = GetProcAddress(GetModuleHandleW(wide("user32.dll").as_ptr()), b"SetTaskmanWindow\0".as_ptr()) {
-                    std::mem::transmute::<_, unsafe extern "system" fn(HWND) -> i32>(f)(hwnd);
-                }
-                RegisterShellHookWindow(hwnd);
+            if find_other("Shell_TrayWnd").is_null()
+                && let Some(f) = GetProcAddress(GetModuleHandleW(wide("user32.dll").as_ptr()), b"SetTaskmanWindow\0".as_ptr())
+            {
+                std::mem::transmute::<_, unsafe extern "system" fn(HWND) -> i32>(f)(hwnd);
             }
+            // always, not only without explorer: this is where the window events come from, and registering
+            // is additive, so explorer's own shell hook keeps working beside ours
+            RegisterShellHookWindow(hwnd);
             hide_taskbar();
         }
         place(hwnd);
