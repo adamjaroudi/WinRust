@@ -1218,6 +1218,21 @@ unsafe fn track(dc: HDC, rc: RECT, frac: f32) {
     fill(dc, RECT { left: x - kr, top: m - kr, right: x + kr, bottom: m + kr }, if style().light() { rgb(255, 255, 255) } else { mix(pal().text, card(), 0.04) }, 2 * kr);
 }
 
+/// A top-lit sheen inside a rounded rect: light pools along the upper edge and fades out, which is what
+/// makes a flat fill read as a surface with a light above it. Rows inside the corner radius are pulled in
+/// by the curve, so the rounding stays clean instead of showing square shoulders.
+unsafe fn lit(dc: HDC, rc: RECT, base: u32, top: u32, depth: i32, rad: i32) {
+    for y in 0..depth.min(rc.bottom - rc.top) {
+        let dy = rad - y;
+        let dx = if dy > 0 { rad - ((rad * rad - dy * dy) as f32).sqrt() as i32 } else { 0 };
+        let t = y as f32 / depth as f32;
+        let row = RECT { left: rc.left + dx, top: rc.top + y, right: rc.right - dx, bottom: rc.top + y + 1 };
+        if row.right > row.left {
+            fill(dc, row, mix(top, base, t * t), 0);
+        }
+    }
+}
+
 /// A raised rounded surface: a hairline edge (a soft shadow on the light style) around `base`.
 unsafe fn surface(dc: HDC, rc: RECT, base: u32, rad: i32) {
     let light = style().light();
@@ -1242,6 +1257,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
     let old = SelectObject(dc, bmp);
     fill(dc, cr, if style().light() { mix(pal().bg, pal().dim, 0.3) } else { mix(pal().bg, pal().text, 0.12) }, sc(16));
     fill(dc, inset(cr, 1), pal().bg, sc(16));
+    lit(dc, inset(cr, 1), pal().bg, mix(pal().bg, pal().text, 0.075), sc(38), sc(16));
     winrust_common::style::backdrop(dc, inset(cr, 1), sc(100) as f32 / 100.0);
     SetBkMode(dc, TRANSPARENT as i32);
     let (face, gface) = (wide(ui_face()), wide(winrust_common::style::icon_face()));
@@ -1290,6 +1306,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                 let base = if on { mix(card, pal().accent, 0.12) } else { card };
                 surface(dc, full, base, sc(18));
                 g(Act::Tile(i as u8), inset(full, 1), base, mix(base, pal().text, 0.05), sc(16));
+                lit(dc, inset(full, 1), base, mix(base, pal().text, 0.055), sc(20), sc(17));
                 // the round icon badge: lit in the accent when on
                 let badge = r(tl + 12, tt + 12, tl + 44, tt + 44);
                 fill(dc, badge, if on { pal().accent } else { mix(card, pal().text, 0.08) }, sc(32));
