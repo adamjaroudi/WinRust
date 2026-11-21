@@ -13,7 +13,7 @@ use std::{
     thread,
     sync::Mutex,
     collections::HashMap,
-    sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU64, Ordering::Relaxed},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, AtomicU64, Ordering::Relaxed},
 };
 #[macro_use]
 extern crate winrust_common;
@@ -64,6 +64,8 @@ static MON_W: AtomicI32 = AtomicI32::new(0); // 0: never resolved, so fall back 
 static MON_H: AtomicI32 = AtomicI32::new(0);
 /// A `--monitor` bar: it leaves the taskbar, the tray icons, the work area and the keyboard hooks to the primary bar.
 static SECONDARY: AtomicBool = AtomicBool::new(false);
+/// Counts the edge-watch ticks, so the costly checks can run on every fourth one.
+static FS_TICK: AtomicU32 = AtomicU32::new(0);
 /// The 1-based monitor number this bar was asked for, re-resolved after a display change.
 static MON_N: AtomicI32 = AtomicI32::new(0);
 
@@ -1522,7 +1524,9 @@ unsafe fn bar_step(hwnd: HWND) {
     let now = now_ms();
     let dt = now.saturating_sub(BAR_T.replace(now)).min(50) as f32;
     let p = BAR_P.get();
-    let p = if p < target { (p + dt / i18n::style::animf(380.0)).min(target) } else { (p - dt / i18n::style::animf(240.0)).max(target) };
+    // auto-hide means this runs all day, so it moves at about half the time the bar takes otherwise
+    let (up, down) = if i18n::style::autohide() { (190.0, 120.0) } else { (380.0, 240.0) };
+    let p = if p < target { (p + dt / i18n::style::animf(up)).min(target) } else { (p - dt / i18n::style::animf(down)).max(target) };
     BAR_P.set(p);
     if p > 0.0 && IsWindowVisible(hwnd) == 0 {
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -1568,7 +1572,9 @@ unsafe fn desktop_now() -> bool {
 }
 
 unsafe fn fs_update(hwnd: HWND) {
-    let fs = fullscreen_now(hwnd);
+    // The pointer is read every tick so the reveal is immediate; working out what is in front and
+    // whether it covers the monitor is far more work, and eight times a second is plenty for that.
+    let fs = if FS_TICK.fetch_add(1, Relaxed) % 4 == 0 { fullscreen_now(hwnd) } else { FULLSCREEN.load(Relaxed) };
     // a fullscreen game keeps the screen: the pointer at the bottom edge does not bring the bar (games park it at the
     // edges all the time); Win opens Start, which brings the bar with it
     let mut pt = POINT { x: 0, y: 0 };
@@ -1604,7 +1610,7 @@ unsafe fn fs_update(hwnd: HWND) {
     }
     // with auto-hide on the pointer has already left the bar and its margin, so waiting two seconds
     // just leaves it hanging there; over the desktop the slower pace is still right
-    let linger = if i18n::style::autohide() { 450 } else { 2000 };
+    let linger = if i18n::style::autohide() { 120 } else { 2000 };
     let desk = !fs && now.saturating_sub(DESK_T.get()) >= linger;
     if DESK_HIDE.swap(desk, Relaxed) != desk {
         bar_anim(hwnd);
@@ -2873,7 +2879,7 @@ fn main() {
         SetTimer(hwnd, 1, 500, None);
         BAR.store(hwnd as isize, Relaxed);
         bar_anim(hwnd); // the bar slides in (it starts hidden above the screen)
-        SetTimer(hwnd, 3, 80, None); // fullscreen and edge watch: 4 samples a second was too coarse to feel like a reveal
+        SetTimer(hwnd, 3, 30, None); // edge watch: at 30 ms the bar is moving before the pointer has settled
         // one low-level keyboard hook is enough: a second one would open Start and switch windows twice per press
         if !secondary() {
             thread::spawn(|| {
