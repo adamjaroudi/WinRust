@@ -1565,7 +1565,9 @@ unsafe fn fullscreen_now(bar: HWND) -> bool {
     }
     // A --monitor bar reserves no strip, so a merely maximized window covers its whole monitor and would read
     // as fullscreen and hide the bar. On such a bar, only a window that is not maximized can be a real fullscreen app.
-    if secondary() && IsZoomed(fg) != 0 {
+    // A bar that auto-hides reserves no strip, so every maximized window covers it and would read as
+    // fullscreen; only a window that is not merely maximized can be the real thing.
+    if (secondary() || i18n::style::autohide()) && IsZoomed(fg) != 0 {
         return false;
     }
     let mut cls = [0u16; 64];
@@ -1614,12 +1616,17 @@ unsafe fn fs_update(hwnd: HWND) {
         MOVED_MS.store(now, Relaxed);
     }
     EDGE_TICKS.store(if at_edge { EDGE_TICKS.load(Relaxed) + 1 } else { 0 }, Relaxed);
-    // a short rest at the edge (two ticks, about 160 ms), so sweeping the pointer past the edge on the way
-    // somewhere else does not summon the bar — that was the other half of "it pops up when I don't want it"
-    let over = (at_edge && EDGE_TICKS.load(Relaxed) >= 2) || (near && BAR_P.get() > 0.0);
-    // In a fullscreen game it takes a longer, deliberate push, so a game that parks the cursor at an edge
-    // cannot raise the bar by accident.
-    let peek = over && (!fs || (EDGE_TICKS.load(Relaxed) >= 3 && now.saturating_sub(MOVED_MS.load(Relaxed)) <= 1500));
+    // Asking for the bar is a short rest at the edge, so sweeping the pointer past it on the way somewhere
+    // else does not summon it. In a fullscreen game it takes a longer push and a pointer that actually
+    // moved, so a game that parks the cursor at an edge cannot raise the bar by accident.
+    let dwell = if fs { 3 } else { 2 };
+    let asked = at_edge && EDGE_TICKS.load(Relaxed) >= dwell && (!fs || now.saturating_sub(MOVED_MS.load(Relaxed)) <= 1500);
+    // Holding it open is a different question from asking for it: anywhere over the bar or its margin keeps
+    // it, whatever is on screen. Tying the hold to the edge dwell as well meant that moving up off the edge
+    // and onto the bar — which is what reaching for a button is — reset the count and took the bar away
+    // under the cursor. With a maximized window counting as fullscreen, that was nearly always.
+    let over = asked || (near && BAR_P.get() > 0.0);
+    let peek = over;
     if FS_PEEK.swap(peek, Relaxed) != peek {
         bar_anim(hwnd);
     }
