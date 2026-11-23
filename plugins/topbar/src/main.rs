@@ -1604,7 +1604,9 @@ unsafe fn fs_update(hwnd: HWND) {
     // why it so often did not come when you wanted it. Once it is up, anywhere over it plus a margin holds
     // it there, so it cannot slip away while you are still aiming at a button.
     let band = sc(3).max(2);
-    let keep = bar_h() + dock_gap() + sc(12);
+    // Generous: the pointer is on its way to the bar long before it is over it, and a bar that ducks
+    // out from under an approaching cursor is worse than one that lingers a moment too long.
+    let keep = bar_h() + dock_gap() + sc(44);
     let at_edge = mine && if at_top() { pt.y <= top + band } else { pt.y >= bot - band };
     let near = mine && if at_top() { pt.y < top + keep } else { pt.y >= bot - keep };
     let moved = pt.x != LAST_X.swap(pt.x, Relaxed) || pt.y != LAST_Y.swap(pt.y, Relaxed);
@@ -1626,7 +1628,7 @@ unsafe fn fs_update(hwnd: HWND) {
     }
     // with auto-hide on the pointer has already left the bar and its margin, so waiting two seconds
     // just leaves it hanging there; over the desktop the slower pace is still right
-    let linger = if i18n::style::autohide() { 120 } else { 2000 };
+    let linger = if i18n::style::autohide() { 220 } else { 2000 };
     let desk = !fs && now.saturating_sub(DESK_T.get()) >= linger;
     if DESK_HIDE.swap(desk, Relaxed) != desk {
         bar_anim(hwnd);

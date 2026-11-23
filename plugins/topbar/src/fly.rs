@@ -973,11 +973,14 @@ pub fn toggle(k: Kind) {
             _ => {}
         }
         let (w, h) = (sc(size(k).0), sc(size(k).1));
-        let sw = crate::scr_w();
+        // scr_w() is this bar's monitor's *width*, but x is a position on the whole desktop: without the
+        // monitor's own left edge added, every panel opened from the second monitor's bar was placed as
+        // though that monitor started at zero, and so landed on the first one.
+        let (sw, mx) = (crate::scr_w(), crate::mon_x());
         let x = match k {
-            Kind::Start => (sw - w) / 2,
-            Kind::Menu => MENU_X.get().min(sw - w - sc(8)).max(sc(8)),
-            _ => sw - w - sc(8),
+            Kind::Start => mx + (sw - w) / 2,
+            Kind::Menu => MENU_X.get().min(mx + sw - w - sc(8)).max(mx + sc(8)),
+            _ => mx + sw - w - sc(8),
         };
         let class = wide("topbar_fly");
         let fy = pop_y(h); // above the bar (below it at the top of the screen)
